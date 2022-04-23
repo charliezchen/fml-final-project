@@ -33,8 +33,10 @@ parser.add_argument('--num-steps', default=10,
                     help='perturb number of steps')
 parser.add_argument('--step-size', default=0.007,
                     help='perturb step size')
-parser.add_argument('--beta', default=6.0,
+parser.add_argument('--beta', default=6.0, type=int,
                     help='regularization, i.e., 1/lambda in TRADES')
+parser.add_argument('--lam', default=6.0, type=int,
+                    help='panelty to logit distance')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=100, metavar='N',
@@ -85,7 +87,8 @@ def train(args, model, device, train_loader, optimizer, epoch):
                            step_size=args.step_size,
                            epsilon=args.epsilon,
                            perturb_steps=args.num_steps,
-                           beta=args.beta)
+                           beta=args.beta,
+                           lam=args.lam)
         loss.backward()
         optimizer.step()
 
