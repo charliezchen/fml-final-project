@@ -10,7 +10,8 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from models.wideresnet import *
 from models.resnet import *
-
+from IPython import embed as e
+import numpy as np
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR PGD Attack Evaluation')
 parser.add_argument('--test-batch-size', type=int, default=200, metavar='N',
@@ -48,8 +49,13 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
 # set up data loader
 transform_test = transforms.Compose([transforms.ToTensor(),])
 testset = torchvision.datasets.CIFAR10(root='../data', train=False, download=True, transform=transform_test)
+torch.random.manual_seed(42)
+indices = torch.randperm(len(testset))[:100]
+testset = torch.utils.data.Subset(testset, indices)
 test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, **kwargs)
 
+last_hiddens = []
+labels = []
 
 def _pgd_whitebox(model,
                   X,
@@ -57,7 +63,12 @@ def _pgd_whitebox(model,
                   epsilon=args.epsilon,
                   num_steps=args.num_steps,
                   step_size=args.step_size):
-    out = model(X)
+    out, last_hidden = model(X, extra=True)
+    # last_hiddens.append(last_hidden.detach().cpu().numpy())
+    # labels.append(y.detach().cpu().numpy())
+    # return 0, 0
+    
+
     err = (out.data.max(1)[1] != y.data).float().sum()
     X_pgd = Variable(X.data, requires_grad=True)
     if args.random:
@@ -77,6 +88,11 @@ def _pgd_whitebox(model,
         X_pgd = Variable(X.data + eta, requires_grad=True)
         X_pgd = Variable(torch.clamp(X_pgd, 0, 1.0), requires_grad=True)
     err_pgd = (model(X_pgd).data.max(1)[1] != y.data).float().sum()
+
+    out, last_hidden = model(X_pgd, extra=True)
+    last_hiddens.append(last_hidden.detach().cpu().numpy())
+    labels.append(y.detach().cpu().numpy())
+    return 0, 0
     print('err pgd (white-box): ', err_pgd)
     return err, err_pgd
 
@@ -160,6 +176,16 @@ def main():
         model.load_state_dict(torch.load(args.model_path))
 
         eval_adv_test_whitebox(model, device, test_loader)
+
+        global last_hiddens
+        global labels
+        last_hiddens = np.concatenate(last_hiddens)
+        labels = np.concatenate(labels)
+
+        np.save("xs_pgd.npy", last_hiddens)
+        np.save("ys_pgd.npy", labels)
+
+        e() and b
     else:
         # black-box attack
         print('pgd black-box attack')
