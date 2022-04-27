@@ -35,7 +35,7 @@ parser.add_argument('--step-size', default=0.007,
                     help='perturb step size')
 parser.add_argument('--beta', default=6.0, type=int,
                     help='regularization, i.e., 1/lambda in TRADES')
-parser.add_argument('--lam', default=6.0, type=int,
+parser.add_argument('--lam', default=6.0, type=float,
                     help='panelty to logit distance')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
@@ -43,6 +43,8 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--model-dir', default='./model-cifar-wideResNet',
                     help='directory of model for saving checkpoint')
+parser.add_argument('--model-ref-dir', type=str, default='',
+                    help='')
 parser.add_argument('--save-freq', '-s', default=1, type=int, metavar='N',
                     help='save frequency')
 
@@ -72,7 +74,7 @@ testset = torchvision.datasets.CIFAR10(root='../data', train=False, download=Tru
 test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, **kwargs)
 
 
-def train(args, model, device, train_loader, optimizer, epoch):
+def train(args, model, model_ref, device, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
@@ -81,6 +83,7 @@ def train(args, model, device, train_loader, optimizer, epoch):
 
         # calculate robust loss
         loss = trades_loss(model=model,
+                           model_ref=model_ref,
                            x_natural=data,
                            y=target,
                            optimizer=optimizer,
@@ -153,6 +156,15 @@ def adjust_learning_rate(optimizer, epoch):
 def main():
     # init model, ResNet18() can be also used here for training
     model = WideResNet().to(device)
+    
+    if args.model_ref_dir:
+        model_ref = WideResNet()
+        model_ref.load_state_dict(torch.load(args.model_ref_dir))
+        model_ref = model_ref.to(device)
+        model_ref.eval()
+    else:
+        model_ref = None
+
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
 
     for epoch in range(1, args.epochs + 1):
@@ -160,7 +172,7 @@ def main():
         adjust_learning_rate(optimizer, epoch)
 
         # adversarial training
-        train(args, model, device, train_loader, optimizer, epoch)
+        train(args, model, model_ref, device, train_loader, optimizer, epoch)
 
         # evaluation on natural examples
         print('================================================================')

@@ -15,6 +15,7 @@ def l2_norm(x):
 
 
 def trades_loss(model,
+                model_ref,
                 x_natural,
                 y,
                 optimizer,
@@ -82,5 +83,18 @@ def trades_loss(model,
     loss_natural = F.cross_entropy(logits, y)
     loss_robust = (1.0 / batch_size) * criterion_kl(F.log_softmax(adv_logits, dim=1),
                                                     F.softmax(logits, dim=1))
-    loss = loss_natural + beta * loss_robust + lam * F.mse_loss(adv_logits.view(-1), logits.view(-1)) 
+    if model_ref:
+        ref_logits = model_ref(x_adv)
+        # from IPython import embed as e
+        # e() or b
+        mask=1-F.one_hot(y, 10)
+        # logits[torch.arange(logits.shape[0]), y] = 0
+        # ref_logits[torch.arange(ref_logits.shape[0]), y] = 0
+        # separation_loss = F.mse_loss(adv_logits.view(-1), ref_logits.view(-1))
+        separation_loss = (F.softmax(adv_logits- ref_logits)*mask).square().mean()
+        # print("separation loss", separation_loss)
+    else:
+        separation_loss = 0
+
+    loss = loss_natural + beta * loss_robust - lam * separation_loss
     return loss
