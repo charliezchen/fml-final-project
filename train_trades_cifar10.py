@@ -7,10 +7,12 @@ import torch.nn.functional as F
 import torchvision
 import torch.optim as optim
 from torchvision import datasets, transforms
+from cosine_scheduler import CosineAnnealingWarmupRestarts
 
 from models.wideresnet import *
 from models.resnet import *
-from trades import trades_loss
+from trades import sep_loss, trades_loss
+import numpy as np
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR TRADES Adversarial Training')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
@@ -43,8 +45,8 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--model-dir', default='./model-cifar-wideResNet',
                     help='directory of model for saving checkpoint')
-parser.add_argument('--model-ref-dir', type=str, default='',
-                    help='')
+parser.add_argument('--model-num', default=3, type=int,
+                    help='number of the ensemble')
 parser.add_argument('--save-freq', '-s', default=1, type=int, metavar='N',
                     help='save frequency')
 
@@ -69,37 +71,44 @@ transform_test = transforms.Compose([
     transforms.ToTensor(),
 ])
 trainset = torchvision.datasets.CIFAR10(root='../data', train=True, download=True, transform=transform_train)
+# trainset = torch.utils.data.Subset(trainset, np.arange(10))
 train_loader = torch.utils.data.DataLoader(trainset, batch_size=args.batch_size, shuffle=True, **kwargs)
 testset = torchvision.datasets.CIFAR10(root='../data', train=False, download=True, transform=transform_test)
+# testset = torch.utils.data.Subset(testset, np.arange(5))
 test_loader = torch.utils.data.DataLoader(testset, batch_size=args.test_batch_size, shuffle=False, **kwargs)
 
 
-def train(args, model, model_ref, device, train_loader, optimizer, epoch):
-    model.train()
+def train(args, models, device, train_loader, optimizers, epoch, lam_scheduler):
+    [m.train() for m in models]
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
 
-        optimizer.zero_grad()
+        # One model as reference at a time
+        for model_ref_index in range(len(models)):
+            [o.zero_grad() for o in optimizers]
+            losses = sep_loss(models, 
+                    model_ref_index, 
+                    x_natural=data,
+                    y=target,
+                    optimizers=optimizers,
+                    step_size=args.step_size,
+                    epsilon=args.epsilon,
+                    perturb_steps=args.num_steps,
+                    beta=args.beta,
+                    lam=lam_scheduler.get_lr())
+            # zero gradient
+            
+            [l.backward() for l in losses]
+            [o.step() for o in optimizers]
+            lam_scheduler.step()
 
-        # calculate robust loss
-        loss = trades_loss(model=model,
-                           model_ref=model_ref,
-                           x_natural=data,
-                           y=target,
-                           optimizer=optimizer,
-                           step_size=args.step_size,
-                           epsilon=args.epsilon,
-                           perturb_steps=args.num_steps,
-                           beta=args.beta,
-                           lam=args.lam)
-        loss.backward()
-        optimizer.step()
+        loss = np.mean([l.item() for l in losses])
 
         # print progress
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                       100. * batch_idx / len(train_loader), loss.item()))
+                       100. * batch_idx / len(train_loader), loss))
 
 
 def eval_train(model, device, train_loader):
@@ -155,37 +164,35 @@ def adjust_learning_rate(optimizer, epoch):
 
 def main():
     # init model, ResNet18() can be also used here for training
-    model = WideResNet().to(device)
+    models = [WideResNet().to(device) for i in range(args.model_num)]
     
-    if args.model_ref_dir:
-        model_ref = WideResNet()
-        model_ref.load_state_dict(torch.load(args.model_ref_dir))
-        model_ref = model_ref.to(device)
-        model_ref.eval()
-    else:
-        model_ref = None
 
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizers = [
+        optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+        for model in models
+    ]
+
+    lam_scheduler = CosineAnnealingWarmupRestarts(first_cycle_steps=len(train_loader), cycle_mult=1.0, max_lr=args.lam, min_lr=0.01, warmup_steps=50, gamma=0.5)
+    
 
     for epoch in range(1, args.epochs + 1):
         # adjust learning rate for SGD
-        adjust_learning_rate(optimizer, epoch)
+        [adjust_learning_rate(optimizer, epoch) for optimizer in optimizers]
 
         # adversarial training
-        train(args, model, model_ref, device, train_loader, optimizer, epoch)
+        train(args, models, device, train_loader, optimizers, epoch, lam_scheduler)
 
         # evaluation on natural examples
         print('================================================================')
-        eval_train(model, device, train_loader)
-        eval_test(model, device, test_loader)
+        [eval_train(model, device, train_loader) for model in models]
+        [eval_test(model, device, test_loader) for model in models]
         print('================================================================')
 
         # save checkpoint
         if epoch % args.save_freq == 0:
-            torch.save(model.state_dict(),
-                       os.path.join(model_dir, 'model-wideres-epoch{}.pt'.format(epoch)))
-            torch.save(optimizer.state_dict(),
-                       os.path.join(model_dir, 'opt-wideres-checkpoint_epoch{}.tar'.format(epoch)))
+            for i in range(len(models)):
+                torch.save(models[i].state_dict(),
+                       os.path.join(model_dir, 'model-wideres-epoch{}-{}.pt'.format(epoch, i)))
 
 
 if __name__ == '__main__':
